@@ -1,0 +1,244 @@
+---
+title: Makemore follow-along
+author: Sam Buchanan
+---
+
+# Part 1: Bigrams
+
+```{python}
+words = open("names.txt", "r").read().splitlines()
+words
+```
+
+```{python}
+min(len(w) for w in words)
+```
+
+```{python}
+max(len(w) for w in words)
+```
+
+```{python}
+import torch
+```
+
+```{python}
+# 26 + 1 characters
+N = torch.zeros((27,27), dtype=torch.int32)
+```
+
+```{python}
+chars = sorted(list(set(''.join(words))))
+stoi = {s:i+1 for i,s in enumerate(chars)}
+stoi['.'] = 0
+itos = {i:s for s,i in stoi.items()}
+```
+
+
+```{python}
+# b = {}
+for w in words:
+    chs = ['.'] + list(w) + ['.']
+    for ch1, ch2 in zip(chs, chs[1:]):
+        ix1 = stoi[ch1]
+        ix2 = stoi[ch2]
+        N[ix1, ix2] += 1
+        # bigram = (ch1, ch2)
+        # b[bigram] = b.get(bigram, 0) + 1
+```
+
+```{python}
+# sorted(b.items(), key=lambda kv: -kv[1])
+N
+```
+
+```{python}
+import matplotlib.pyplot as plt
+import treescope
+treescope.basic_interactive_setup(autovisualize_arrays=True)
+
+plt.imshow(N)
+N
+```
+
+
+```{python}
+p = N[0].float()
+p /= p.sum()
+```
+```{python}
+g = torch.Generator().manual_seed(2147483647)
+ix = torch.multinomial(p, num_samples=1, replacement=True, generator=g).item()
+print(ix)
+itos[ix]
+```
+
+```{python}
+P = (N+1).clone().float()
+P = P / P.sum(axis=-1, keepdim=True)
+```
+
+
+```{python}
+g = torch.Generator().manual_seed(42)
+
+for i in range(20):
+    ix = 0
+    out = []
+    while True:
+        p = P[ix]
+        # p = torch.ones((27,)) / 27.0
+        ix = torch.multinomial(p, num_samples=1, replacement=True, generator=g).item()
+        out.append(itos[ix])
+        if ix == 0:
+            break
+    print(''.join(out))
+```
+
+
+```{python}
+log_likelihood = 0.
+n = 0
+for w in words:
+    chs = ['.'] + list(w) + ['.']
+    for ch1, ch2 in zip(chs, chs[1:]):
+        ix1 = stoi[ch1]
+        ix2 = stoi[ch2]
+        prob = P[ix1, ix2]
+        logprob = torch.log(prob)
+        log_likelihood += logprob
+        n += 1
+        # print(f'{ch1}{ch2}: {prob:.4f} {logprob:.4f}')
+
+print(f'{log_likelihood=}')
+nll = -log_likelihood
+print(f'{nll/n=}')
+```
+
+```{python}
+1 / 27.0
+```
+
+# Part 2: the neural network approach
+
+
+```{python}
+
+xs, ys = [], []
+
+for w in words[:1]:
+    chs = ['.'] + list(w) + ['.']
+    for ch1, ch2 in zip(chs, chs[1:]):
+        ix1 = stoi[ch1]
+        ix2 = stoi[ch2]
+        xs.append(ix1)
+        ys.append(ix2)
+
+xs = torch.tensor(xs)
+ys = torch.tensor(ys)
+```
+```{python}
+import torch.nn.functional as F
+xenc = F.one_hot(xs, num_classes=27).float()
+```
+
+```{python}
+print(xenc.dtype)
+plt.imshow(xenc)
+```
+
+
+```{python}
+g = torch.Generator().manual_seed(42)
+W = torch.randn((27, 27), generator=g)
+logits = xenc @ W
+counts = logits.exp()
+probs = counts / counts.sum(dim=-1, keepdim=True)
+probs
+```
+## Investigate
+
+```{python}
+nlls = torch.zeros(5)
+for i in range(5):
+    x = xs[i].item()
+    y = ys[i].item()
+    p = probs[i, y]
+    logp = torch.log(p)
+    nll = -logp
+    nlls[i] = nll
+nlls
+```
+
+## Optimization
+
+```{python}
+
+xs, ys = [], []
+
+for w in words:
+    chs = ['.'] + list(w) + ['.']
+    for ch1, ch2 in zip(chs, chs[1:]):
+        ix1 = stoi[ch1]
+        ix2 = stoi[ch2]
+        xs.append(ix1)
+        ys.append(ix2)
+
+
+xs = torch.tensor(xs)
+ys = torch.tensor(ys)
+num = xs.nelement()
+print('number of examples: ', num)
+```
+```{python}
+g = torch.Generator().manual_seed(42)
+W = torch.randn((27, 27), generator=g, requires_grad=True)
+```
+
+```{python}
+(W**2).sum()
+```
+
+
+
+```{python}
+for k in range(100):
+    xenc = F.one_hot(xs, num_classes=27).float()
+    logits = xenc @ W
+    counts = logits.exp()
+    probs = counts / counts.sum(dim=-1, keepdim=True)
+    loss = -probs[torch.arange(num), ys].log().mean() + 0.0 * (W**2).mean()
+    print(loss.item())
+
+    W.grad = None
+    loss.backward()
+
+    W.data += -50. * W.grad
+
+```
+
+
+## Neural net sampling
+
+
+```{python}
+g = torch.Generator().manual_seed(42)
+
+for i in range(5):
+
+    out = []
+    ix = 0
+    while True:
+        xenc = F.one_hot(torch.tensor([ix]), num_classes=27).float()
+        logits = xenc @ W
+        counts = logits.exp()
+        p = counts / counts.sum(dim=1, keepdim=True)
+
+        ix = torch.multinomial(p, num_samples=1, replacement=True, generator=g).item()
+        out.append(itos[ix])
+        if ix == 0:
+            break
+    print(''.join(out))
+
+```
+

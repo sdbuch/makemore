@@ -1,0 +1,278 @@
+---
+title:
+author: Sam Buchanan
+format:
+    html:
+        code-fold: show
+---
+
+## Code imports
+
+```{python}
+import matplotlib.pyplot as plt
+import torch
+import torch.nn.functional as F
+import treescope
+
+treescope.basic_interactive_setup(autovisualize_arrays=True)
+```
+
+
+# Bengio 2003: A Neural Probabilistic Language Model
+
+
+```{python}
+words = open("names.txt", "r").read().splitlines()
+print(len(words))
+words[:8]
+```
+
+```{python}
+chars = sorted(list(set(''.join(words))))
+stoi = {s: i+1 for i,s in enumerate(chars)}
+stoi['.'] = 0
+itos = {i:s for s,i in stoi.items()}
+print(itos)
+```
+
+```{python}
+block_size = 3
+X, Y = [], []
+for w in words:
+    print(w)
+    context = [0] * block_size
+    for ch in w + '.':
+        ix = stoi[ch]
+        X.append(context)
+        Y.append(ix)
+        # print(''.join(itos[i] for i in context), '--->', itos[ix])
+        context = context[1:] + [ix]
+
+X, Y = torch.tensor(X), torch.tensor(Y)
+```
+
+
+```{python}
+# Build dataset
+
+def build_dataset(words):
+    block_size = 3
+    X, Y = [], []
+    for w in words:
+        context = [0] * block_size
+        for ch in w + '.':
+            ix = stoi[ch]
+            X.append(context)
+            Y.append(ix)
+            # print(''.join(itos[i] for i in context), '--->', itos[ix])
+            context = context[1:] + [ix]
+
+    X, Y = torch.tensor(X), torch.tensor(Y)
+    print(X.shape, Y.shape)
+    return X, Y
+
+import random
+random.seed(42)
+random.shuffle(words)
+n1 = int(0.8 * len(words))
+n2 = int(0.9 * len(words))
+
+Xtr, Ytr = build_dataset(words[:n1])
+Xdev, Ydev = build_dataset(words[n1:n2])
+Xte, Yte = build_dataset(words[n2:])
+```
+
+
+
+```{python}
+X.shape, Y.shape, X.dtype, Y.dtype
+```
+
+
+```{python}
+C = torch.randn((27, 2))
+```
+
+```{python}
+# print(F.one_hot(torch.tensor(5), num_classes=27).float() @ C)
+C[X].shape
+```
+
+```{python}
+X[13, 2]
+```
+
+```{python}
+emb = C[X]
+emb.shape
+```
+
+```{python}
+W1 = torch.randn((6, 100))
+b1 = torch.randn((100,))
+```
+
+```{python}
+h = emb.view(-1, C.shape[-1] * block_size) @ W1 + b1
+h.shape
+```
+
+
+```{python}
+W2 = torch.randn((100, 27))
+b2 = torch.randn(27)
+```
+
+```{python}
+logits = h @ W2 + b2
+logits.shape
+```
+
+```{python}
+counts = logits.exp()
+prob = counts / counts.sum(-1, keepdims=True)
+prob.shape
+```
+
+```{python}
+Y.shape
+```
+
+```{python}
+loss = -prob[torch.arange(len(Y)), Y].log().mean()
+```
+
+```{python}
+g = torch.Generator().manual_seed(42)
+```
+
+```{python}
+def init_params(n_char, n_emb, n_context, n_hidden, g):
+    C = torch.randn((n_char, n_emb), generator=g)
+    W1 = torch.randn((n_emb * n_context, n_hidden), generator=g)
+    b1 = torch.randn((n_hidden,), generator=g)
+    W2 = torch.randn((n_hidden, n_char), generator=g)
+    b2 = torch.randn(n_char, generator=g)
+    return [C, W1, b1, W2, b2]
+```
+
+
+```{python}
+print('Number of parameters: ', sum(p.nelement() for p in parameters))
+```
+```{python}
+```
+
+```{python}
+lre = torch.linspace(-3, 0, 30)
+lrs = 10**lre
+lrs
+```
+
+```{python}
+
+lri = []
+lossi = []
+stepi = []
+```
+
+```{python}
+
+batch_size = 32
+num_steps = 200000
+
+# forward pass
+parameters = init_params(27, 10, block_size, 200, g)
+C, W1, b1, W2, b2 = parameters
+for p in parameters:
+    p.requires_grad = True
+
+for i in range(num_steps):
+    # Get minibatch
+    ix = torch.randint(0, Xtr.shape[0], (batch_size,), generator=g)
+
+    emb = C[Xtr[ix]]
+    h = torch.tanh(emb.view(-1, C.shape[-1] * block_size) @ W1 + b1)
+    logits = h @ W2 + b2
+    # counts = (logits - logits.max()).exp()
+    # prob = counts / counts.sum(-1, keepdims=True)
+    # loss = -prob[torch.arange(len(Y)), Y].log().mean()
+    loss = F.cross_entropy(logits, Ytr[ix])
+    # backward pass
+    for p in parameters:
+        p.grad = None
+    loss.backward()
+
+    # lr = lrs[i]
+    lr = 0.1 if i < num_steps // 2 else 0.01
+    for p in parameters:
+        p.data += -lr* p.grad
+
+    # lri.append(lre[i].item())
+    lossi.append(loss.log10().item())
+    stepi.append(i)
+
+print(loss.item())
+```
+
+```{python}
+# plt.plot(lri, lossi)
+plt.plot(stepi, lossi)
+```
+
+
+```{python}
+emb = C[Xdev]
+h = torch.tanh(emb.view(-1, C.shape[-1] * block_size) @ W1 + b1)
+logits = h @ W2 + b2
+# counts = (logits - logits.max()).exp()
+# prob = counts / counts.sum(-1, keepdims=True)
+# loss = -prob[torch.arange(len(Y)), Y].log().mean()
+loss = F.cross_entropy(logits, Ydev)
+print(loss.item())
+```
+
+```{python}
+emb = C[Xtr]
+h = torch.tanh(emb.view(-1, C.shape[-1] * block_size) @ W1 + b1)
+logits = h @ W2 + b2
+# counts = (logits - logits.max()).exp()
+# prob = counts / counts.sum(-1, keepdims=True)
+# loss = -prob[torch.arange(len(Y)), Y].log().mean()
+loss = F.cross_entropy(logits, Ytr)
+print(loss.item())
+```
+
+
+```{python}
+# training, dev/val, test splits
+# 80%, 10%, 10%
+```
+
+```{python}
+plt.figure(figsize=(8,8))
+plt.scatter(C[:, 0].data, C[:, 1].data, s=200)
+for i in range(C.shape[0]):
+    plt.text(C[i, 0].item(), C[i,1].item(), itos[i], ha='center', va='center', color='white')
+plt.grid('minor')
+```
+
+
+```{python}
+for _ in range(20):
+    out = []
+    context = [0] * block_size
+    while True:
+        emb = C[torch.tensor(context)]
+        h = torch.tanh(emb.view(1, -1) @ W1 + b1)
+        logits = h @ W2 + b2
+        probs = F.softmax(logits, dim=-1)
+        ix = torch.multinomial(probs, num_samples=1, replacement=True, generator=g).item()
+        context = context[1:] + [ix]
+        out.append(ix)
+        if ix == 0:
+            break
+
+    print(''.join(itos[i] for i in out))
+```
+
